@@ -31,6 +31,13 @@ def checkFit(infile, outdir, fitName, hbins):
     hStatusFail.Reset("ICESM")
     hStatusFail.SetTitle(f"{fitName} fail")
     
+    hEdmPass = copy.deepcopy(hbins.Clone(f"{fitName}_pass_edm"))
+    hEdmPass.Reset("ICESM")
+    hEdmPass.SetTitle(f"{fitName} pass")
+    hEdmFail = copy.deepcopy(hbins.Clone(f"{fitName}_fail_edm"))
+    hEdmFail.Reset("ICESM")
+    hEdmFail.SetTitle(f"{fitName} fail")
+    
     nEtaBins = hStatusPass.GetNbinsX()
     nPtBins = hStatusPass.GetNbinsY()
     
@@ -45,8 +52,10 @@ def checkFit(infile, outdir, fitName, hbins):
         npt = int((nbin / nEtaBins) + 1)
         if "_resP" in name:
             hStatusPass.SetBinContent(neta, npt, obj.status())
+            hEdmPass.SetBinContent(neta, npt, obj.edm())
         else:
             hStatusFail.SetBinContent(neta, npt, obj.status())
+            hEdmFail.SetBinContent(neta, npt, obj.edm())
     rootfileWithEffi.Close()
 
     canvas = ROOT.TCanvas("canvas","",800,800)
@@ -67,7 +76,17 @@ def checkFit(infile, outdir, fitName, hbins):
             draw_both0_noLog1_onlyLog2=1, passCanvas=canvas,
             palette=87, nContours=5, drawOption="colz")
 
+    drawTH2(hEdmPass, "Muon #eta", "Muon p_{T} (GeV)", "Fit edm::0,0.00001",
+            hEdmPass.GetName(), plotLabel="ForceTitle", outdir=outdir, 
+            passCanvas=canvas,
+            palette=87, nContours=51, drawOption="colz")
     
+    drawTH2(hEdmFail, "Muon #eta", "Muon p_{T} (GeV)", "Fit edm::0,0.00001",
+            hEdmFail.GetName(), plotLabel="ForceTitle", outdir=outdir, 
+            passCanvas=canvas,
+            palette=87, nContours=51, drawOption="colz")
+
+
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description='Diagnostic for fit status')

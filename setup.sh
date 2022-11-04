@@ -29,4 +29,4 @@ export PYTHONPATH=.:$PYTHONPATH
 ## cd CMSSW_11_2_0
 ## cmsenv
 alias python=python3
-source /cvmfs/sft.cern.ch/lcg/views/LCG_99/x86_64-centos8-gcc10-opt/setup.sh
+source /cvmfs/sft.cern.ch/lcg/views/LCG_99/x86_64-centos7-gcc10-opt/setup.sh
