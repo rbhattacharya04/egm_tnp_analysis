@@ -14,6 +14,7 @@
 #include "RooAbsPdf.h"
 #include "RooPlot.h"
 #include "RooFitResult.h"
+#include "RooChi2Var.h"
 /// include pdfs
 #include "RooCBExGaussShape.h"
 #include "RooCMSShape.h"
@@ -40,11 +41,11 @@ public:
   tnpFitter( TH1 *hPass, TH1 *hFail, std::string histname, int massbins, float massmin, float massmax  );
   ~tnpFitter(void) {if( _work != 0 ) delete _work; }
   void setZLineShapes(TH1 *hZPass, TH1 *hZFail );
-  void setWorkspace(std::vector<std::string>, bool, bool, bool);
+  void setWorkspace(const std::vector<std::string>&, bool, bool, bool);
   //python3void setOutputFile( TFile *fOut ) {_fOut = fOut;}
   //void setOutputFile(TString fname ) {_fOut = new TFile(fname, "UPDATE");}
-  void setOutputFile(TString fname ) {_fOut = new TFile(fname, "recreate"); } 
-  int fits(std::string title = "");
+    void setOutputFile(const std::string& fname ) {_fOut = new TFile(fname.c_str(), "recreate"); } 
+  int fits(const std::string& title = "");
   void useMinos(bool minos = true) {_useMinos = minos; }
   void isMC(bool isMC = true) {_isMC = isMC; }
   void textParForCanvas(RooFitResult *resP, RooFitResult *resF, TPad *p);
@@ -56,9 +57,10 @@ public:
   void setPrintLevel(int level) {_printLevel = std::clamp(level, -1, 9); } 
   void setMaxSignalFractionFail(double max) { _maxSignalFractionFail = max; }
   double getEfficiencyUncertainty(double nP, double nF, double e_nP, double e_nF);
-  void updateConstraints(std::string key, std::string value) { _constraints[key] = value; }
-  RooFitResult* manageFit(bool, int);
-  
+  void updateConstraints(const std::string& key, const std::string& value) { _constraints[key] = value; }
+  void setConstantVariable(const std::string& name, const double& val, const bool& removeRange);
+  RooFitResult* manageFit(bool, int, std::string*);
+    
 private:
   RooWorkspace *_work;
   std::string _histname_base;
@@ -74,6 +76,7 @@ private:
   int _printLevel = 3;
   double _maxSignalFractionFail = -1; // not used by default if negative
   std::unordered_map<std::string, std::string> _constraints = {};
+  int _nFitBins = -1;
     
 };
 
@@ -103,6 +106,7 @@ tnpFitter::tnpFitter(TFile *filein, std::string histname, int massbins, float ma
   _work->import(rooFail) ;
   _xFitMin = massmin;
   _xFitMax = massmax;
+  _nFitBins = massbins;
 }
 
 tnpFitter::tnpFitter(TH1 *hPass, TH1 *hFail, std::string histname, int massbins, float massmin, float massmax ) {
@@ -130,7 +134,17 @@ tnpFitter::tnpFitter(TH1 *hPass, TH1 *hFail, std::string histname, int massbins,
   _work->import(rooFail) ;
   _xFitMin = massmin;
   _xFitMax = massmax;
+  _nFitBins = massbins;
   
+}
+
+void tnpFitter::setConstantVariable(const std::string& name, const double& val = 0.0, const bool& removeRange = false) {
+    RooRealVar* tmp = _work->var(name.c_str());
+    if (tmp != nullptr) {
+        if (removeRange) tmp->removeRange();
+        tmp->setVal(val);
+        tmp->setConstant();
+    }
 }
 
 
@@ -141,7 +155,7 @@ void tnpFitter::setZLineShapes(TH1 *hZPass, TH1 *hZFail ) {
   _work->import(rooFail) ;  
 }
 
-void tnpFitter::setWorkspace(std::vector<std::string> workspace, bool isMCfit = false, bool analyticPhysicsShape = false, bool modelFSR = false) {
+void tnpFitter::setWorkspace(const std::vector<std::string>& workspace, bool isMCfit = false, bool analyticPhysicsShape = false, bool modelFSR = false) {
   for( unsigned icom = 0 ; icom < workspace.size(); ++icom ) {
     _work->factory(workspace[icom].c_str());
   }
@@ -216,12 +230,15 @@ void tnpFitter::setWorkspace(std::vector<std::string> workspace, bool isMCfit = 
       
   }
 
+  if (_work->pdf("bkgFailBackup") != nullptr)
+      _work->factory("SUM::pdfFailBackup(nSigF*sigFail,nBkgF*bkgFailBackup)");
+  
   //_work->Print(); // FIXME: might want to comment this one to avoid unnecessary output text
 
 }
 
-RooFitResult* tnpFitter::manageFit(bool isPass, int attempt = 0) {
-
+RooFitResult* tnpFitter::manageFit(bool isPass, int attempt = 0, std::string* lastNamePDF = nullptr) {
+    
     std::string pdfName = "pdfPass";
     std::string hName = "hPass";
     std::string constrainName = "constrainP";
@@ -229,16 +246,25 @@ RooFitResult* tnpFitter::manageFit(bool isPass, int attempt = 0) {
     std::string bkgPar = "nBkgP";
 
     if (not isPass) {
-        pdfName = "pdfFail";
+        pdfName = (attempt == 2) ? "pdfFailBackup" : "pdfFail";
         hName = "hFail";
         constrainName = "constrainF";
         sigPar = "nSigF";
         bkgPar = "nBkgF";
     }
 
+    if (lastNamePDF != nullptr) *lastNamePDF = pdfName;
+
+    // should check the parameters of the actual pdf being used rather than assuming that there are no constraints when attempt == 2
+    const RooArgSet* constraint = (attempt == 2) ? nullptr : _work->set(constrainName.c_str());
+
+    // TODO: in case minos is used the uncertainties are asymmetric and one should get them accordingly
+    
     RooAbsPdf *pdf = _work->pdf(pdfName.c_str());
-    RooFitResult* res = pdf->fitTo(*_work->data(hName.c_str()),
-                                   //Minos(_useMinos),
+    //RooAbsData* dh = _work->data(hName.c_str());
+    RooAbsData* dh =  _work->data(hName.c_str());
+    RooFitResult* res = pdf->fitTo(*dh,
+                                   // Minos(_work->argSet(sigPar.c_str())),
                                    _useMinos ? Minos(_work->argSet(sigPar.c_str())) : Minos(kFALSE),
                                    (_useMinos or not _isMC) ? SumW2Error(kFALSE) : SumW2Error(kTRUE), // try always false
                                    //SumW2Error(kFALSE), // default is false, but needs it explicitly for MC otherwise roofit complains
@@ -247,30 +273,46 @@ RooFitResult* tnpFitter::manageFit(bool isPass, int attempt = 0) {
                                    Minimizer("Minuit2"),
                                    Strategy(isPass ? _strategyPassFit : _strategyFailFit),
                                    PrintLevel(_printLevel),
-                                   ExternalConstraints(*_work->set(constrainName.c_str())));
+                                   (constraint != nullptr) ? ExternalConstraints(*constraint) : RooCmdArg::none() );
 
-    if (res->status() == 0 or attempt > 0) return res;
+    RooChi2Var chi2("chi2", "chi2 var", *pdf, *((RooDataHist*) dh), Range(_xFitMin,_xFitMax));
+    int ndof = _nFitBins - res->floatParsFinal().getSize();
+    double chi2sigma = std::sqrt(2. * ndof);
+    bool goodChi2 = std::fabs(chi2.getVal() - (double) ndof) < (10.0 * chi2sigma); 
+    // std::cout << pdfName << " --> Chi2 / ndof = " << chi2.getVal() << " / " << ndof << "   good chi2 = " << goodChi2 << std::endl;
+    // std::cout << pdfName << " --> status = " << res->status() << std::endl;
+    // std::cout << pdfName << " --> cov. quality = " << res->covQual() << std::endl;
+
+    if (attempt > 0) return res;
+    if (goodChi2 and (res->status() == 0 or (res->status() == 1 and res->covQual() == 3))) return res;
     //std::cout << "Failed fit for " << pdfName << ": trying again ..." << std::endl;
     // if status != 0 try something, like checking background and if it is too small fit only signal
     // or just refit with ranges of parameters frm previous fit, but this might not work
     double nBkg = _work->var(bkgPar.c_str())->getVal();
     double nSig = _work->var(sigPar.c_str())->getVal();
+    RooAbsPdf *bkgpdf = _work->pdf(isPass ? "bkgPass" : "bkgFail");
+    
     if (nBkg < 0.005 * nSig) {
+        // a bit hardcoded to get background parameters, should probably make sure to have these stored somewhere in the class
         //std::cout << "Refitting with no background: attempt " << attempt+1 << std::endl;
-        RooRealVar* tmp = _work->var(bkgPar.c_str());
-        tmp->removeRange();
-        tmp->setVal(0.0);
-        tmp->setConstant();
-        return manageFit(isPass, attempt+1);
+        setConstantVariable(bkgPar.c_str(), 0.0, true);
+        std::vector<std::string> bkgParNamesP = {"acmsP", "betaP", "gammaP", "expalphaP"};
+        std::vector<std::string> bkgParNamesF = {"acmsF", "betaF", "gammaF", "expalphaF"};
+        std::vector<std::string>& bkgParNames = isPass ? bkgParNamesP : bkgParNamesF; 
+        for (UInt_t i = 0; i < bkgParNames.size(); i++) {
+            if (_work->var(bkgParNames[i].c_str()) == nullptr) continue;
+            setConstantVariable(bkgParNames[i], _work->var(bkgParNames[i].c_str())->getVal());
+        }
+        return manageFit(isPass, 1, lastNamePDF);
     } else {
-        // might try something else here
-        return res;
+        if (isPass) return res;
+        else        return manageFit(isPass, 2, lastNamePDF);
     }
     
 }
 
 
-int tnpFitter::fits(std::string title) {
+int tnpFitter::fits(const std::string& title) {
 
   // std::cout << " this is the title : " << title << std::endl;
 
@@ -283,37 +325,40 @@ int tnpFitter::fits(std::string title) {
   _work->var("x")->setRange(_xFitMin,_xFitMax);
   _work->var("x")->setRange("fitMassRange",_xFitMin,_xFitMax);
 
+  // TODO: check that all parameters exists
   for (auto i = _constraints.begin(); i != _constraints.end(); i++) {
       // std::cout << i->first << " -> " << i->second << std::endl;
       _work->defineSet((i->first).c_str(), (i->second).c_str());
   }
 
+  std::string lastNamePassPDF = "";
   //std::cout << "Fit for passing probes" << std::endl;
-  RooFitResult* resPass = manageFit(true);
-  //RooFitResult* resPass = pdfPass->fitTo(*_work->data("hPass"),Minos(_useMinos),SumW2Error(kTRUE),Save());
-  if( _fixSigmaFtoSigmaP ) {
-    _work->var("sigmaF")->setVal( _work->var("sigmaP")->getVal() );
-    _work->var("sigmaF")->setConstant();
-  }
-
-  // _work->var("sigmaF")->setVal(_work->var("sigmaP")->getVal());
-  // _work->var("sigmaF")->setRange(0.8* _work->var("sigmaP")->getVal(), 3.0* _work->var("sigmaP")->getVal());
+  RooFitResult* resPass = manageFit(true, 0, &lastNamePassPDF);
+  // std::cout << "Last used pass pdf  -> " << lastNameFailPDF << std::endl;
+  
   //std::cout << "Fit for failing probes" << std::endl;
-  RooFitResult* resFail = manageFit(false);
+  std::string lastNameFailPDF = "";
+  RooFitResult* resFail = manageFit(false, 0, &lastNameFailPDF);
+  // std::cout << "Last used fail pdf  -> " << lastNameFailPDF << std::endl;
 
+  std::string bkgNamePass = "bkgPass";
+  std::string bkgNameFail = "bkgFail";
+  if (lastNamePassPDF.find("Backup") != std::string::npos) bkgNamePass += "Backup";
+  if (lastNameFailPDF.find("Backup") != std::string::npos) bkgNameFail += "Backup";
+  
   RooPlot *pPass = _work->var("x")->frame(_xFitMin,_xFitMax); // always plot 50 - 130
   RooPlot *pFail = _work->var("x")->frame(_xFitMin,_xFitMax);
   pPass->SetTitle("passing probe");
   pFail->SetTitle("failing probe");
 
   _work->data("hPass") ->plotOn( pPass );
-  _work->pdf("pdfPass")->plotOn( pPass, LineColor(kRed) );
-  _work->pdf("pdfPass")->plotOn( pPass, Components("bkgPass"),LineColor(kBlue),LineStyle(kDashed));
+  _work->pdf(lastNamePassPDF.c_str())->plotOn( pPass, LineColor(kRed) );
+  _work->pdf(lastNamePassPDF.c_str())->plotOn( pPass, Components(bkgNamePass.c_str()),LineColor(kBlue),LineStyle(kDashed));
   _work->data("hPass") ->plotOn( pPass );
   
   _work->data("hFail") ->plotOn( pFail );
-  _work->pdf("pdfFail")->plotOn( pFail, LineColor(kRed) );
-  _work->pdf("pdfFail")->plotOn( pFail, Components("bkgFail"),LineColor(kBlue),LineStyle(kDashed));
+  _work->pdf(lastNameFailPDF.c_str())->plotOn( pFail, LineColor(kRed) );
+  _work->pdf(lastNameFailPDF.c_str())->plotOn( pFail, Components(bkgNameFail.c_str()),LineColor(kBlue),LineStyle(kDashed));
   _work->data("hFail") ->plotOn( pFail );
 
   TCanvas * c = new TCanvas(TString::Format("%s_Canv",_histname_base.c_str()) ,TString::Format("%s_Canv",_histname_base.c_str()), 1150, 500);
@@ -369,7 +414,7 @@ void tnpFitter::textParForCanvas(RooFitResult *resP, RooFitResult *resF,TPad *p)
   }
 
   
-  TPaveText *text1 = new TPaveText(0,0.80,1,1);
+  TPaveText *text1 = new TPaveText(0,0.76,1,1);
   text1->SetFillColor(0);
   text1->SetBorderSize(0);
   text1->SetTextAlign(12);
@@ -389,7 +434,7 @@ void tnpFitter::textParForCanvas(RooFitResult *resP, RooFitResult *resF,TPad *p)
   //  text->SetTextSize(0.06);
 
 //  text->AddText("* Passing parameters");
-  TPaveText *text = new TPaveText(0,0,1,0.8);
+  TPaveText *text = new TPaveText(0,0,1,0.76);
   text->SetFillColor(0);
   text->SetBorderSize(0);
   text->SetTextAlign(12);
