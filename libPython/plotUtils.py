@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+
 import os
 import copy
 import shutil
@@ -31,8 +33,8 @@ def addStringToEnd(name, matchToAdd, notAddIfEndswithMatch=False):
 def createPlotDirAndCopyPhp(outdir):
     if outdir and not os.path.exists(outdir):
         os.makedirs(outdir)
-        htmlpath = "etc/inputs/index.php"
-        shutil.copy(htmlpath, outdir)
+    htmlpath = "etc/inputs/index.php"
+    shutil.copy(htmlpath, outdir)
 
 
 def compileMacro(x): #, basedir=os.environ['PWD']):
@@ -42,8 +44,16 @@ def compileMacro(x): #, basedir=os.environ['PWD']):
         print("Loading and compiling %s failed! Exit" % x)
         quit()
 
+def compileFileMerger(x):
+    y=x.strip(".C")
+    print(f"Compiling {x} into {y}")
+    res = os.system(f"g++ `root-config --libs --cflags --glibs` -O3 {x} -o {y}")
+    if res:
+        print("Compiling %s failed! Exit" % x)
+        quit()
 
-def testBinning(bins, testbins, var="var", flag="workingPoint"):
+
+def testBinning(bins, testbins, var="var", flag="workingPoint", allowRebin=False):
     if bins != testbins:
         if bins[0] in testbins:
             firstTestIdx = testbins.index(bins[0])
@@ -58,14 +68,25 @@ def testBinning(bins, testbins, var="var", flag="workingPoint"):
                 print()
                 print()
                 return 0
-            else:
-                pass
+            elif allowRebin and all(bins[i] in testbins for i in range(len(bins))):
+                print()
+                print("PLEASE READ!")
+                print()
+                print(f"Warning: {var} binning not consistent with the one in histograms for {flag}")
+                print(f"{bins}")
+                print(f"{testbins}")
+                print(f"However it seems to be a subset of it, so I will continue assuming you wanted to rebin. Proceed with caution!")
+                print()
+                print()
+                return 0
         print(f"Error: {var} binning not consistent with the one in histograms for {flag}")
         print(f"{bins}")
         print(f"{testbins}")
         print("Please check!")
-        quit()
-
+        return -1
+    else:
+        return 0
+    
 def safeGetObject(fileObject, objectName, quitOnFail=True, silent=False, detach=True):
     obj = fileObject.Get(objectName)
     if obj == None:

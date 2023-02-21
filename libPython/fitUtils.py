@@ -1,7 +1,11 @@
+#!/usr/bin/env python3
+
 import ROOT
 import re
 import math
+import os
 
+from .plotUtils import safeOpenFile, safeGetObject
 
 def ptMin( tnpBin ):
     ptmin = 1
@@ -14,10 +18,10 @@ def ptMin( tnpBin ):
 def createWorkspaceForAltSig( sample, tnpBin, tnpWorkspaceParam, constrainSignalFailFromMC=False):
     
     fileref = sample.mcRef.altSigFit
-    filemc  = ROOT.TFile(fileref,'read')
+    filemc  = safeOpenFile(fileref,mode='READ')
 
-    fitresP = filemc.Get( '%s_resP' % tnpBin['name']  )
-    fitresF = filemc.Get( '%s_resF' % tnpBin['name'] )
+    fitresP = safeGetObject(filemc, '%s_resP' % tnpBin['name'], detach=False)
+    fitresF = safeGetObject(filemc, '%s_resF' % tnpBin['name'], detach=False)
 
     listOfParamP = ['meanP', 'sigmaP', 'nP', 'alphaP', 'sigmaP', 'sigmaP_2']
     listOfParamF = ['meanF', 'sigmaF', 'nF', 'alphaF', 'sigmaF', 'sigmaF_2', 'fsrMeanF', 'fsrSigmaF']
@@ -83,36 +87,36 @@ def createWorkspaceForAltSig( sample, tnpBin, tnpWorkspaceParam, constrainSignal
     # print(">>>>>")
     # print(sample)
     # print(sample.nominalFit)
-    # print(">>>>>")
-    filerefData = sample.nominalFit
-    filedata  = ROOT.TFile(filerefData,'read')
-    fitresF = filedata.Get( '%s_resF' % tnpBin['name'] )
-    listOfBkgParamF = ['acmsF', 'betaF', 'gammaF']
-    
-    # failing probes and background parameters
-    fitPar = fitresF.floatParsFinal()
-    for ipar in range(len(fitPar)):
-        pName = fitPar[ipar].GetName()
-        #print('{n}[{f:.3f}]'.format(n=pName,f=fitPar[ipar].getVal()))
-        x = re.compile('%s\[.*?' % pName)
-        for par in listOfBkgParamF:
-            if pName == par:
-                listToRM = list(filter(x.match, tnpWorkspaceParam))
-                if len(listToRM):
-                    #if len(listToRM) > 1:
-                    #    print(f"Error: listToRM has more than 1 element: {listToRM}")
-                    #    quit()
-                    ir = listToRM[0] # should always be only 1 element, otherwise adding it back below becomes a problem
-                    #print(f">>>>> old {ir}")
-                    tnpWorkspaceParam.remove(ir)
-                    parRange = ir.split("[")[1].split("]")[0].split(",")  # get elements within square brackets, "ir" is like "name[value,low,high]"
-                    parRange = ",".join(parRange[1:]) # concatenate everything except the first element
-                    new_ir = "%s[%2.3f,%s]" % (pName, fitPar[ipar].getVal(), parRange)
-                    #print(f">>>>> new {new_ir}")
-                    tnpWorkspaceParam.append( new_ir )
-                                    
-    filedata.Close()
+    # # print(">>>>>")
 
+    # filerefData = sample.nominalFit
+    # filedata  = ROOT.TFile(filerefData,'read')
+    # fitresF = filedata.Get( '%s_resF' % tnpBin['name'] )
+    # listOfBkgParamF = ['acmsF', 'betaF', 'gammaF']
+    
+    # # failing probes and background parameters
+    # fitPar = fitresF.floatParsFinal()
+    # for ipar in range(len(fitPar)):
+    #     pName = fitPar[ipar].GetName()
+    #     #print('{n}[{f:.3f}]'.format(n=pName,f=fitPar[ipar].getVal()))
+    #     x = re.compile('%s\[.*?' % pName)
+    #     for par in listOfBkgParamF:
+    #         if pName == par:
+    #             listToRM = list(filter(x.match, tnpWorkspaceParam))
+    #             if len(listToRM):
+    #                 #if len(listToRM) > 1:
+    #                 #    print(f"Error: listToRM has more than 1 element: {listToRM}")
+    #                 #    quit()
+    #                 ir = listToRM[0] # should always be only 1 element, otherwise adding it back below becomes a problem
+    #                 #print(f">>>>> old {ir}")
+    #                 tnpWorkspaceParam.remove(ir)
+    #                 parRange = ir.split("[")[1].split("]")[0].split(",")  # get elements within square brackets, "ir" is like "name[value,low,high]"
+    #                 parRange = ",".join(parRange[1:]) # concatenate everything except the first element
+    #                 new_ir = "%s[%2.3f,%s]" % (pName, fitPar[ipar].getVal(), parRange)
+    #                 #print(f">>>>> new {new_ir}")
+    #                 tnpWorkspaceParam.append( new_ir )
+                                    
+    #filedata.Close()
     
     return tnpWorkspaceParam
 
@@ -129,9 +133,9 @@ def histFitterNominal( sample, tnpBin, tnpWorkspaceParam, massbins=60, massmin=6
         "RooCMSShape::bkgFail(x, acmsF, betaF, gammaF, peakF)",
     ]
         
-    print('------- now nominal fitting bin:')
-    for i in tnpBin:
-        print(i, tnpBin[i])
+    #print('------- now nominal fitting bin:')
+    #for i in tnpBin:
+    #    print(i, tnpBin[i])
     tnpWorkspaceFunc = [
         "Gaussian::sigResPass(x,meanP,sigmaP)",
         "Gaussian::sigResFail(x,meanF,sigmaF)",
@@ -156,7 +160,10 @@ def histFitterNominal( sample, tnpBin, tnpWorkspaceParam, massbins=60, massmin=6
     fitter.setPassStrategy(2)
     fitter.setFailStrategy(2)
     fitter.setPrintLevel(-1)
-    fitter.setOutputFile(sample.nominalFit+'_bin_'+tnpBin['name'])
+    outFileName = sample.nominalFit.rstrip(".root") + "_bin_" + tnpBin["name"] + ".root"
+    fitter.setOutputFile(outFileName)
+    plotPath = os.path.abspath(os.path.dirname(outFileName)) + f"/plots/{sample.getName()}/nominalFit/"
+    fitter.setPlotOutputPath(plotPath)
     fitter.isMC(sample.isMonteCarlo())
     
     ## generated Z LineShape
@@ -224,7 +231,7 @@ def histFitterAltSig( sample, tnpBin, tnpWorkspaceParam, massbins=60, massmin=60
         "RooCMSShape::bkgFail(x, acmsF, betaF, gammaF, peakF)",
     ]
     
-    if altSignalFail:
+    if altSignalFail and not sample.isMonteCarlo():
         tnpWorkspaceFunc = [
             "tailLeft[%d]" % (-1 if ptmin >= 35 else 1),
             "RooCBExGaussShape::sigResPass(x,meanP,sigmaP,alphaP,nP,sigmaP_2,tailLeft)",
@@ -264,7 +271,10 @@ def histFitterAltSig( sample, tnpBin, tnpWorkspaceParam, massbins=60, massmin=60
     fitter.setPassStrategy(2)
     fitter.setFailStrategy(2)
     fitter.setPrintLevel(-1)
-    fitter.setOutputFile( sample.altSigFit+'_bin_'+tnpBin['name'])
+    outFileName = sample.altSigFit.rstrip(".root") + "_bin_" + tnpBin["name"] + ".root"
+    fitter.setOutputFile(outFileName)
+    plotPath = os.path.abspath(os.path.dirname(outFileName)) + f"/plots/{sample.getName()}/altSigFit/"
+    fitter.setPlotOutputPath(plotPath)
     fitter.isMC(sample.isMonteCarlo())
 
     if zeroBackground:
@@ -334,7 +344,10 @@ def histFitterAltBkg( sample, tnpBin, tnpWorkspaceParam, massbins=60, massmin=60
     fitter.setPassStrategy(2)
     fitter.setFailStrategy(2)
     fitter.setPrintLevel(-1)
-    fitter.setOutputFile(sample.altBkgFit+'_bin_'+tnpBin['name'])
+    outFileName = sample.altBkgFit.rstrip(".root") + "_bin_" + tnpBin["name"] + ".root"
+    fitter.setOutputFile(outFileName)
+    plotPath = os.path.abspath(os.path.dirname(outFileName)) + f"/plots/{sample.getName()}/altBkgFit/"
+    fitter.setPlotOutputPath(plotPath)
     fitter.isMC(sample.isMonteCarlo())
 
     ## generated Z LineShape

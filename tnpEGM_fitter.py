@@ -1,3 +1,5 @@
+#!/usr/bin/env python3 
+
 ### python specific import
 import os
 import pickle
@@ -6,6 +8,8 @@ from multiprocessing import Pool
 import datetime
 import copy
 import argparse
+import re
+from array import array
 
 ## safe batch mode
 import sys
@@ -19,14 +23,14 @@ ROOT.PyConfig.IgnoreCommandLineOptions = True
 ROOT.gInterpreter.ProcessLine(".O3")
 
 from libPython.tnpClassUtils import tnpSample
-from libPython.plotUtils import compileMacro, testBinning, safeGetObject, safeOpenFile
+from libPython.plotUtils import compileMacro, testBinning, safeGetObject, safeOpenFile, createPlotDirAndCopyPhp, compileFileMerger
+from libPython.checkFitStatus import checkFit
 
-if "/RooCBExGaussShape_cc.so" not in ROOT.gSystem.GetLibraries():
-    compileMacro("libCpp/RooCBExGaussShape.cc")
-if "/RooCMSShape_cc.so" not in ROOT.gSystem.GetLibraries():
-    compileMacro("libCpp/RooCMSShape.cc")
-if "/histFitter_C.so" not in ROOT.gSystem.GetLibraries():
-    compileMacro("libCpp/histFitter.C")
+compileMacro("libCpp/RooCBExGaussShape.cc")
+compileMacro("libCpp/RooCMSShape.cc")
+compileMacro("libCpp/histFitter.C")
+#compileFileMerger("libCpp/FileMerger.C")
+compileMacro("libCpp/FileMerger.C")
 
 ### tnp library
 import libPython.binUtils  as tnpBiner
@@ -67,16 +71,10 @@ massbins, massmin, massmax = 60, 60, 120
 
 ## define the binning here, much easier...
 binning_eta = [round(-2.4+0.1*i,2) for i in range(49) ]
-#binning_eta = [-2.4+0.1*i for i in range(4) ]
-#binning_eta = [-2.4, -2.25, -2.10, -1.95, -1.8, -1.7, -1.:q
-#binning_eta = [0.+0.2*i for i in range(13) ]
+#binning_eta = [round(-2.4+0.4*i,2) for i in range(13) ]
 
-#binning_pt  = [25., 35., 45., 55., 65.]#27.5, 30., 32., 34, 36., 38., 40., 42., 44., 47., 50., 55., 65]
 binning_pt  = [24., 26., 28., 30., 32., 34., 36., 38., 40., 42., 44., 47., 50., 55., 60., 65.]
-#binning_pt  = [24., 26., 28., 30.]
-
-#binning_pt  = [-15., -7.5, -5., -2.5, 0., 2.5, 5., 7.5, 15.]  ## ALERT
-
+#binning_pt  = [24., 28., 32., 36., 40., 47., 55., 65.]
 
 typeflag = args.flag.split('_')[1]
 
@@ -86,7 +84,7 @@ if typeflag == 'tracking':
     #binning_pt  = [15., 25.,35.,45.,55.,65.,80.]
     #massbins, massmin, massmax = 100, 40, 140
     #binning_pt  = [55., 65.]
-    binning_pt  = [25., 35., 45., 55., 65.]  # [24., 65.]
+    binning_pt  = [24., 35., 45., 55., 65.]  # [24., 65.]
     #massbins, massmin, massmax = 100, 50, 150
     massbins, massmin, massmax = 80, 50, 130
     binningDef = {
@@ -96,7 +94,8 @@ if typeflag == 'tracking':
 
 elif typeflag == 'reco':
     #binning_pt   = [24., 65.]
-    massbins, massmin, massmax = 52, 68, 120
+    #massbins, massmin, massmax = 52, 68, 120
+    massbins, massmin, massmax = 60, 60, 120
     if args.useTrackerMuons:
         binning_pt  = [24., 26., 30., 34., 38., 42., 46., 50., 55., 65.]
     else:
@@ -129,33 +128,35 @@ if typeflag == 'tracking':
     bkgParFit = [
         "expalphaP[0.,-5.,5.]",
         "expalphaF[0.,-5.,5.]",
-        "acmsF[60.,40.,130.]","betaF[0.05,0.01,0.11]","gammaF[0.1, 0, 1]","peakF[90.0]",
-        "c1F[0.0,-1.0,1.0]","c2F[-0.5,-1.0,1.0]","c3F[0.0,-1.0,1.0]","c4F[-0.5,-1.0,1.0]"
+        "acmsF[60.,40.,130.]","betaF[5.,0.1,40.]","gammaF[0.1, 0, 1]","peakF[90.0]",
+        "c1F[0.0,-1.0,1.0]","c2F[-0.5,-1.0,1.0]","c3F[0.0,-1.0,1.0]","c4F[-0.5,-1.0,1.0]",
+        #"argMassF[100.,80.,120.]","argSlopeF[5.,0.,20.]","argPowF[1.0,0.0,3.0]"
     ]
     bkgShapes = [
         "Exponential::bkgPass(x, expalphaP)",
         #"RooCMSShape::bkgPass(x, acmsP, betaP, gammaP, peakP)",
         "RooCMSShape::bkgFail(x, acmsF, betaF, gammaF, peakF)",
+        #"ArgusBG::bkgFail(x,argMassF,argSlopeF,argPowF)",
         "Chebychev::bkgFailBackup(x,{c1F,c2F,c3F,c4F})",
         #"Bernstein::bkgFailBackup(x,{b0F[0.5,0,1.0],b1F[0.5,0,1.0],b2F[0.5,0,1.0],b3F[0.5,0,1.0],b4F[0.5,0,1.0]})",
-        #"Exponential::bkgFailBackup(x, expalphaF)"
+        "Exponential::bkgFailMC(x, expalphaF)"
     ]
     
     tnpParNomFit = [
         "meanP[-0.0,-5.0,5.0]","sigmaP[0.5,0.1,5.0]",
-        "meanF[-0.0,-5.0,5.0]","sigmaF[0.5,0.05,3.0]",
+        "meanF[-0.0,-5.0,5.0]","sigmaF[0.5,0.02,3.0]",
     ]
 
     # these might be partially overridden when running the fit to data by taking the values from the MC fit and narrowing the range in which they can float to help convergence
     tnpParAltSigFit = [
-        "meanP[-0.0,-5.0,5.0]","sigmaP[1,0.7,6.0]","alphaP[2.0,1.2,3.5]",'nP[3,-5,5]',"sigmaP_2[1.5,0.5,6.0]",
-        "meanF[-0.0,-12.0,12.0]","sigmaF[2,0.7,12.0]","alphaF[2.0,1.2,3.5]",'nF[3,-5,5]',"sigmaF_2[2.0,0.5,6.0]",
+        "meanP[-0.0,-5.0,5.0]","sigmaP[1,0.7,6.0]","alphaP[2.0,1.2,3.5]",'nP[3,0.01,5]',"sigmaP_2[1.5,0.5,6.0]",
+        "meanF[-0.0,-12.0,12.0]","sigmaF[2,0.7,12.0]","alphaF[2.0,1.2,3.5]",'nF[3,0.01,5]',"sigmaF_2[2.0,0.5,6.0]",
     ]
 
     # for pt >= 55 and tracking (se also note above)
     tnpParAltSigFitTrackingHighPt = [
-        "meanP[-0.0,-5.0,5.0]","sigmaP[1,0.7,6.0]","alphaP[2.0,1.2,3.5]",'nP[3,-5,5]',"sigmaP_2[1.5,0.5,6.0]",
-        "meanF[4.0,-1.0,15.0]","sigmaF[2,0.7,15.0]","alphaF[2.0,1.2,3.5]",'nF[3,-5,5]',"sigmaF_2[2.0,0.5,6.0]",
+        "meanP[-0.0,-5.0,5.0]","sigmaP[1,0.7,6.0]","alphaP[2.0,1.2,3.5]",'nP[3,0,5]',"sigmaP_2[1.5,0.5,6.0]",
+        "meanF[4.0,-1.0,15.0]","sigmaF[2,0.7,15.0]","alphaF[2.0,1.2,3.5]",'nF[3,0,5]',"sigmaF_2[2.0,0.5,6.0]",
     ]
 
     tnpParNomFit.extend(bkgParFit)
@@ -169,9 +170,10 @@ if typeflag == 'tracking':
             tnpParAltSigFit.extend(["maxFracSigF[0.5]"])
             tnpParAltSigFitTrackingHighPt.extend(["maxFracSigF[0.5]"])
         else:
-            tnpParNomFit.extend(["maxFracSigF[0.15]"])
-            tnpParAltSigFit.extend(["maxFracSigF[0.15]"])
-            tnpParAltSigFitTrackingHighPt.extend(["maxFracSigF[0.15]"])
+            # use 0.2 if not using MergedStandAlone_nValidHits > 0
+            tnpParNomFit.extend(["maxFracSigF[0.5]"])
+            tnpParAltSigFit.extend(["maxFracSigF[0.5]"])
+            tnpParAltSigFitTrackingHighPt.extend(["maxFracSigF[0.5]"])
 
     # ## Try to constrain some background parameters (for tracking might need to do it for signal instead, since S/B is small)
     parConstraints = [
@@ -181,43 +183,46 @@ if typeflag == 'tracking':
         #"Gaussian::constrainP_gammaP(gammaP,0.5,0.8)",
         # failing
         "Gaussian::constrainF_acmsF(acmsF,90,50)",
-        "Gaussian::constrainF_betaF(betaF,0.05,0.25)",
+        #"Gaussian::constrainF_betaF(betaF,0.05,0.25)",
+        "Gaussian::constrainF_betaF(betaF,5.0,25.0)",
         "Gaussian::constrainF_gammaF(gammaF,0.5,0.8)",
     ]
 
             
 elif typeflag == 'reco':
 
-    ## when forming the workspace in fitUtils.py the parameter with LOWPT or HIGHPT will be renamed without this keyword depending on pt >= 40
     bkgParFit = [
         "expalphaP[0.,-5.,5.]",
         "expalphaF[0.,-5.,5.]",
-        "acmsF[60.,40.,130.]","betaF[0.05,0.005,0.12]","gammaF[0.1, 0, 1]","peakF[90.0]",
+        "acmsF[60.,40.,130.]","betaF[5.,0.1,40.]","gammaF[0.1, 0, 1]","peakF[90.0]",
+        "c1F[0.0,-1.0,1.0]","c2F[-0.5,-1.0,1.0]","c3F[0.0,-1.0,1.0]",
+        #"b0F[0.1,0,100]","b1F[0.1,0,100]","b2F[0.1,0,100]","b3F[0.1,0,100]"
     ]
     bkgShapes = [
         "Exponential::bkgPass(x, expalphaP)",
         #"RooCMSShape::bkgPass(x, acmsP, betaP, gammaP, peakP)",
         "RooCMSShape::bkgFail(x, acmsF, betaF, gammaF, peakF)",
-        #"Bernstein::bkgFailBackup(x,{c0F[0.5,0,1.0],c1F[0.5,0,1.0],c2F[0.5,0,1.0],c3F[0.5,0,1.0],c4F[0.5,0,1.0]})",
-        "Exponential::bkgFailBackup(x, expalphaF)"
+        #"Bernstein::bkgFailBackup(x,{b0F,b1F,b2F,b3F})",
+        #"Exponential::bkgFailBackup(x, expalphaF)"
+        "Chebychev::bkgFailBackup(x,{c1F,c2F,c3F})",
         #"Chebychev::bkgFailBackup(x,{c1F[0.0,-1.0,1.0],c2F[-0.5,-1.0,1.0],c3F[0.0,-1.0,1.0],c4F[-0.5,-1.0,1.0]})",
+        "Exponential::bkgFailMC(x, expalphaF)"
     ]
 
     tnpParNomFit = [
         "meanP[-0.0,-5.0,5.0]","sigmaP[0.5,0.1,3.0]",
         "meanF[-0.0,-3.0,3.0]","sigmaF[0.5,0.01,2.0]",
     ]
-    
+
     # was to tune few bins for reco, but currently used everywhere
     tnpParAltSigFit = [
-        "meanP[-0.0,-5.0,5.0]","sigmaP[1,0.7,6.0]","alphaP[2.0,1.2,3.5]",'nP[3,-5,5]',"sigmaP_2[1.5,0.5,6.0]",
-        "meanF[-0.0,-5.0,5.0]","sigmaF[2,0.7,5.0]","alphaF[2.0,1.2,3.5]",'nF[3,-5,5]',"sigmaF_2[2.0,0.5,6.0]",
+        "meanP[-0.0,-5.0,5.0]","sigmaP[1,0.7,6.0]","alphaP[2.0,1.2,3.5]",'nP[3,0.01,5]',"sigmaP_2[1.5,0.5,6.0]",
+        "meanF[-0.0,-5.0,5.0]","sigmaF[2,0.7,5.0]","alphaF[2.0,1.2,3.5]",'nF[3,0.1,5]',"sigmaF_2[2.0,0.5,6.0]",
     ]
 
     tnpParNomFit.extend(bkgParFit)
     tnpParAltSigFit.extend(bkgParFit)
 
-    
     if not args.mcSig and args.useTrackerMuons:
         # for tracker muons
         tnpParNomFit.extend(["maxFracSigF[0.05]"] if args.binNumber in [24] else ["maxFracSigF[0.05]"] if args.binNumber in [50, 69, 79, 133, 420] else ["maxFracSigF[0.3]"])
@@ -230,23 +235,25 @@ elif typeflag == 'reco':
         #"Gaussian::constrainP_betaP(betaP,0.05,0.25)",
         #"Gaussian::constrainP_gammaP(gammaP,0.5,0.8)",
         # failing
-        #"Gaussian::constrainF_acmsF(acmsF,90,50)",
-        #"Gaussian::constrainF_betaF(betaF,0.05,0.25)",
-        #"Gaussian::constrainF_gammaF(gammaF,0.5,0.8)",
+        "Gaussian::constrainF_acmsF(acmsF,90,50)",
+        "Gaussian::constrainF_betaF(betaF,5.0,25.0)",
+        "Gaussian::constrainF_gammaF(gammaF,0.5,0.8)",
     ]
 
 else:
-    
+
     bkgParFit = [
         "expalphaP[0.,-5.,5.]",
         "expalphaF[0.,-5.,5.]",
-        "acmsF[60.,40.,130.]","betaF[0.05,0.01,0.11]","gammaF[0.1, 0, 1]","peakF[90.0]",
-        "c1F[0.0,-1.0,1.0]","c2F[-0.5,-1.0,1.0]","c3F[0.0,-1.0,1.0]"
+        "acmsF[60.,40.,130.]","betaF[5.,0.1,40.]","gammaF[0.1, 0, 1]","peakF[90.0]",
+        "c1F[0.0,-1.0,1.0]","c2F[-0.5,-1.0,1.0]","c3F[0.0,-1.0,1.0]",
+        #"argMassF[90.,60.,120.]","argSlopeF[5.,0.,20.]","argPowF[1.0,0.0,3.0]"
     ]
     bkgShapes = [
         "Exponential::bkgPass(x, expalphaP)",
         "Exponential::bkgFail(x, expalphaF)",
         "Chebychev::bkgFailBackup(x,{c1F,c2F,c3F})",
+        #"ArgusBG::bkgFailBackup(x,argMassF,argSlopeF,argPowF)",
      ]
 
     tnpParNomFit = [
@@ -255,13 +262,15 @@ else:
     ]
     
     tnpParAltSigFit = [
-        "meanP[-0.0,-5.0,5.0]","sigmaP[1,0.7,6.0]","alphaP[2.0,1.2,3.5]",'nP[3,-5,5]',"sigmaP_2[1.5,0.5,6.0]",
-        "meanF[-0.0,-5.0,5.0]","sigmaF[2,0.7,15.0]","alphaF[2.0,1.2,3.5]",'nF[3,-5,5]',"sigmaF_2[2.0,0.5,6.0]",
+        "meanP[-0.0,-5.0,5.0]","sigmaP[1,0.7,6.0]","alphaP[2.0,1.2,3.5]",'nP[3,0.01,5]',"sigmaP_2[1.5,0.5,6.0]",
+        "meanF[-0.0,-5.0,5.0]","sigmaF[2,0.7,15.0]","alphaF[2.0,1.2,3.5]",'nF[3,0.01,5]',"sigmaF_2[2.0,0.5,6.0]",
     ]
-
+    tnpParNomFit.extend(bkgParFit)
+    tnpParAltSigFit.extend(bkgParFit)
+    
     parConstraints = []
+#####
 
-        
 # add second gaussian at low mass around 70 to model FSR bump for working points with isolation
 flagsWithFSR = ["iso", "trigger", "isonotrig"]
 if any(x in typeflag for x in flagsWithFSR):
@@ -292,16 +301,14 @@ dataName = f"mu_Run{args.era}"
 samples_data = tnpSample(dataName,
                          args.inputData,
                          f"{outputDirectory}/{dataName}_{args.flag}.root",
-                         False,
-                         luminosity)
+                         False)
 
 eraMC = "postVFP" if args.era == "GtoH" else "preVFP"
 mcName = f"mu_DY_{eraMC}"
 samples_dy = tnpSample(mcName,
                        args.inputMC,
                        f"{outputDirectory}/{mcName}_{args.flag}.root",
-                       True,
-                       luminosity)
+                       True)
 #samples_data.printConfig()
 #samples_dy.printConfig()
 
@@ -314,16 +321,18 @@ if args.createHists:
         print(f"Error: you are trying to use a wider mass range ({massmin}-{massmax}) than the histograms for {typeflag}")
         quit()
     this_binning_pt = [round(htest.GetYaxis().GetBinLowEdge(i), 1) for i in range(1, htest.GetNbinsY()+2) ]
-    testBinning(binning_pt, this_binning_pt, "pt", typeflag)
+    resTestPt = testBinning(binning_pt, this_binning_pt, "pt", typeflag, allowRebin=True)
     this_binning_eta = [round(htest.GetZaxis().GetBinLowEdge(i), 1) for i in range(1, htest.GetNbinsZ()+2) ]
-    testBinning(binning_eta, this_binning_eta, "eta", typeflag)
+    resTestEta = testBinning(binning_eta, this_binning_eta, "eta", typeflag, allowRebin=True)
     ftest.Close()
+    if resTestPt or resTestEta:
+        exit(-1)
 
 samplesDef = {
     'data'   : samples_data,
     'mcNom'  : samples_dy,
-    'mcAlt'  : None, 
-    'tagSel' : None,
+    'mcAltSig'  : None, 
+    #'tagSel' : None,
 }
 
 #samplesDef["data"].printConfig()
@@ -346,7 +355,7 @@ if args.createBins:
     print(">>> create bins")
     if os.path.exists( outputDirectory ):
         shutil.rmtree( outputDirectory )
-    os.makedirs( outputDirectory )
+    createPlotDirAndCopyPhp(outputDirectory)
     tnpBins = tnpBiner.createBins(binningDef, None)
     pickle.dump( tnpBins, open( '%s/bining.pkl'%(outputDirectory),'wb') )
     print('created dir: {o} '.format(o= outputDirectory))
@@ -400,20 +409,33 @@ for s in samplesDef.keys():
     sample =  samplesDef[s]
     if sample is None: continue
     setattr( sample, 'mcRef'     , sampleMC )
-    setattr( sample, 'nominalFit', '%s/%s_%s.nominalFit.root' % ( outputDirectory , sample.getName(), args.flag ) )
-    setattr( sample, 'altSigFit' , '%s/%s_%s.altSigFit.root'  % ( outputDirectory , sample.getName(), args.flag ) )
-    setattr( sample, 'altBkgFit' , '%s/%s_%s.altBkgFit.root'  % ( outputDirectory , sample.getName(), args.flag ) )
+    setattr( sample, 'nominalFit', '%s/%s_%s_nominalFit.root' % ( outputDirectory , sample.getName(), args.flag ) )
+    setattr( sample, 'altSigFit' , '%s/%s_%s_altSigFit.root'  % ( outputDirectory , sample.getName(), args.flag ) )
+    setattr( sample, 'altBkgFit' , '%s/%s_%s_altBkgFit.root'  % ( outputDirectory , sample.getName(), args.flag ) )
 
 ### change the sample to fit if mc fit
 if args.mcSig:
     sampleToFit = samplesDef['mcNom']
 
+fileName = sampleToFit.nominalFit
+fitType  = 'nominalFit'
+if args.altSig :
+    fileName = sampleToFit.altSigFit
+    fitType  = 'altSigFit'
+if args.altBkg :
+    fileName = sampleToFit.altBkgFit
+    fitType  = 'altBkgFit'
+
+plottingDir = '%s/plots/%s/%s' % (outputDirectory,sampleToFit.getName(),fitType)
+createPlotDirAndCopyPhp(plottingDir)
+    
 if  args.doFit:
     print(">>> running fits")
     #print('sampleToFit.dump()', sampleToFit.dump())
-    useAllTemplateForFail = True # if typeflag in ["reco", "tracking"] else False # use all probes to build MC template for failing probes when fitting data nominal
+    # can't use all probes for cases with isolation, since the failing probe sample has the FSR and a second bump at low mass
+    useAllTemplateForFail = True if typeflag not in flagsWithFSR else False # use all probes to build MC template for failing probes when fitting data nominal
     maxFailIntegralToUseAllProbe = 300 if typeflag not in ["tracking"] else -1 # use all probes for the failing template only when stat is very small, otherwise sometimes the fit doesn't work well
-    altSignalFail = True if typeflag in ["reco", "tracking", "veto"] else False # use Gaussian as resolution function for altSig model
+    altSignalFail = True if typeflag in ["tracking", "reco", "veto"] else False # use Gaussian as resolution function for altSig model
     modelFSR = True if typeflag in flagsWithFSR else False # add Gaussian to model low mass bump from FSR, in altSig fit
     def parallel_fit(ib): ## parallel
         #print("tnpBins['bins'][ib] = ",tnpBins['bins'][ib])
@@ -457,43 +479,66 @@ if  args.doFit:
 ##### dumping plots
 ####################################################################
 if  args.doPlot:
-    fileName = sampleToFit.nominalFit
-    fitType  = 'nominalFit'
-    if args.altSig :
-        fileName = sampleToFit.altSigFit
-        fitType  = 'altSigFit'
-    if args.altBkg :
-        fileName = sampleToFit.altBkgFit
-        fitType  = 'altBkgFit'
 
+    print()
+    print("Merging root files ...")
+    print(f"Output: {fileName}")
+    fileNameNoExt = fileName.rstrip(".root")
     # if doing one bin get the new plots and update the file, don't overwrite it or all other bins are lost
     if args.binNumber >= 0:
         thisbin = tnpBins['bins'][args.binNumber]['name']
-        rootfileBin = safeOpenFile(f"{fileName}_bin_{thisbin}")
+        rootfileBin = safeOpenFile(f"{fileNameNoExt}_bin_{thisbin}.root")
         rootfile = safeOpenFile(f"{fileName}", mode="UPDATE")
         for k in rootfileBin.GetListOfKeys():
             obj = safeGetObject(rootfileBin, k.GetName(), detach=False)
             obj.Write(k.GetName(), ROOT.TObject.kOverwrite) # write in merged root file overwriting keys if they already existed
         rootfile.Close()
         rootfileBin.Close()
-        os.system('rm '+fileName+'_bin_bin*')
+        os.system(f"rm {fileNameNoExt}_bin_bin*.root")
     else:
-        os.system('hadd -f %s %s' % (fileName, fileName+'_bin_bin*'))
-        os.system('sleep 1')
-        os.system('rm '+fileName+'_bin_bin*')
+        # TODO: check all files are present?
+        ## hadd doesn't always work for some reason, it leads to crashes
+        # os.system(f"hadd -f {fileName} {fileNameNoExt}_bin_bin*.root")
+        ## C++ helper works fine for merging 
+        # NumberOfBins = (len(binning_eta)-1) * (len(binning_pt)-1)
+        # os.system(f"./libCpp/FileMerger {NumberOfBins} {fileName} {fileNameNoExt}_bin_bin*.root")
+        ## test python version to call the C++ helper
+        numberOfBins = len(tnpBins['bins'])
+        regexp = re.compile(f"{os.path.basename(fileNameNoExt)}_bin_bin.*.root")
+        outpath = os.path.dirname(fileName) + "/"
+        vec = ROOT.std.vector["std::string"]()
+        for f in os.listdir(outpath):
+            if os.path.isfile(os.path.join(outpath, f)) and regexp.match(f):
+                #print(outpath+f)
+                #print(">>> Storing it")
+                vec.push_back(os.path.join(outpath, f))
+        if vec.size() != numberOfBins:
+            print(f"Error: number of files ({vec.size()}) does not coincide with number of bins ({numberOfBins})")
+            vec.clear()
+            os.system("sleep 3")
+            print("Deleting temporary files and exiting")
+            os.system(f"rm {fileNameNoExt}_bin_bin*.root")
+            quit()
+        ROOT.FileMerger(numberOfBins, fileName, vec)
+        vec.clear()
+        os.system("sleep 3")
+        os.system(f"rm {fileNameNoExt}_bin_bin*.root")
+    print("Done with merging :-)")
+    print()
+    #quit()
 
-    plottingDir = '%s/plots/%s/%s' % (outputDirectory,sampleToFit.getName(),fitType)
-    if not os.path.exists( plottingDir ):
-        os.makedirs( plottingDir )
-    shutil.copy('etc/inputs/index.php.listPlots','%s/index.php' % plottingDir)
-
-    verbosePlotting = True
-    rootfile = safeOpenFile(f"{fileName}")
-    for ib in range(len(tnpBins['bins'])):
-        if (args.binNumber >= 0 and ib == args.binNumber) or args.binNumber < 0:
-            tnpRoot.histPlotter(rootfile, tnpBins['bins'][ib], plottingDir, -1, verbosePlotting ) ## the -1 is form marc, something with replica
-    rootfile.Close()
-    print(' ===> Plots saved in <=======')
+    ## currently done in the C++ class directly
+    ## keep for reference or debugging
+    # verbosePlotting = True
+    # rootfile = safeOpenFile(f"{fileName}", mode="read")
+    # for ib in range(len(tnpBins['bins'])):
+    #     if (args.binNumber >= 0 and ib == args.binNumber) or args.binNumber < 0:
+    #         binName = tnpBins['bins'][ib]['name']
+    #         c = safeGetObject(rootfile, f"{binName}_Canv", detach=False)
+    #         c.SaveAs(f"{plottingDir}/{binName}.png")
+    #         #tnpRoot.histPlotter(rootfile, tnpBins['bins'][ib], plottingDir, -1, verbosePlotting ) ## the -1 is form marc, something with replica
+    # rootfile.Close()
+    # print(' ===> Plots saved in <=======')
 #    print('localhost/%s/' % plottingDir)
 
 
@@ -507,34 +552,35 @@ if args.sumUp:
     #pprint(vars(sampleToFit.mcRef))
     #print('done with dump')
     info = {
-        'data'        : sampleToFit.getOutputPath(),
+        #'data'        : sampleToFit.getOutputPath(),
         'dataNominal' : sampleToFit.nominalFit,
         'dataAltSig'  : sampleToFit.altSigFit ,
         'dataAltBkg'  : sampleToFit.altBkgFit ,
         'mcNominal'   : sampleToFit.mcRef.getOutputPath(),
-        'mcNominal_fit'   : sampleToFit.mcRef.nominalFit,
-        ## marc 'mcAlt'       : None,
-        'mcAlt'       : sampleToFit.mcRef.altSigFit,
+        'mcNominal_fit': sampleToFit.mcRef.nominalFit,
+        'mcAltSig'    : sampleToFit.mcRef.altSigFit,
         'mcAltBkg'    : sampleToFit.mcRef.altBkgFit,
         'tagSel'      : None
         }
 
-    if not samplesDef['mcAlt'] is None:
-        info['mcAlt'] = samplesDef['mcAlt'].getOutputPath()
-    if not samplesDef['tagSel'] is None:
+    if 'mcAltSig' in samplesDef.keys() and not (samplesDef['mcAltSig'] is None):
+        #print(samplesDef["mcAltSig"].getOutputPath())
+        #print(sampleToFit.mcRef.altSigFit)
+        info['mcAltSig'] = samplesDef["mcAltSig"].getOutputPath()
+    if 'tagSel' in samplesDef.keys() and not (samplesDef['tagSel'] is None):
         info['tagSel'] = samplesDef['tagSel'].getOutputPath()
-
     #print(info)
 
-    effis = None
     effFileName = outputDirectory+'/allEfficiencies.txt'
-    fOut = open( effFileName,'w')
-
+    # security check, if the code crashes the temporary files are still present, let's remove them before executing parallel_sumUp
+    if any ("_tmpTMP_" in f for f in os.listdir(outputDirectory)):
+        os.system(f"rm {effFileName}_tmpTMP_*")
+            
+    #fOut = open( effFileName,'w')
     def parallel_sumUp(_bin):
-        effis = tnpRoot.getAllEffi( info, _bin )
+        effis = tnpRoot.getAllEffi( info, _bin, outputDirectory, saveCanvas=True)
         #print("effis =",effis)
-        #print('this is _bin', _bin)
-
+        #print('this is _bin', _bin)        
         ### formatting assuming 2D bining -- to be fixed
         v1Range = _bin['title'].split(';')[1].split('<')
         v2Range = _bin['title'].split(';')[2].split('<')
@@ -557,103 +603,28 @@ if args.sumUp:
             #print(exp)
             fOut.write(exp)
 
-        astr =  '%-+8.3f\t%-+8.3f\t%-+8.3f\t%-+8.3f\t%-10.5f\t%-10.5f\t%-10.5f\t%-10.5f\t%-15.5f\t%-15.5f\t%-15.5f\t%-15.5f\t%-15.5f\t%-10.5f' % (
+        astr =  '%-+8.3f\t%-+8.3f\t%-+8.3f\t%-+8.3f\t%-10.6f\t%-10.6f\t%-10.6f\t%-10.6f\t%-15.6f\t%-15.6f\t%-15.6f\t%-15.6f\t%-15.6f\t%-10.5f' % (
             float(v1Range[0]), float(v1Range[2]),
             float(v2Range[0]), float(v2Range[2]),
             effis['dataNominal'][0],effis['dataNominal'][1],
             effis['mcNominal'  ][0],effis['mcNominal'  ][1],
             effis['dataAltSig' ][0],effis['dataAltSig' ][1],
-            effis['mcAlt' ][0], effis['mcAlt' ][1],
+            effis['mcAltSig' ][0], effis['mcAltSig' ][1],
             effis['dataAltBkg' ][0],
             effis['tagSel'][0],
             )
         #print(astr)
         fOut.write( astr + '\n' )
-
         fOut.close()
-
-        canv_all = ROOT.TCanvas(_bin['name'], _bin['name'], 1200, 1200)
-        canv_all.Divide(3,3)
-        canv_all.Draw()
-        ipad = 1
-        canv_all.cd(0)
-        txt = ROOT.TLatex()
-        txt.SetTextFont(42)
-        txt.SetTextSize(0.03)
-        txt.SetNDC()
-        txt.DrawLatex(0.01, 0.97, '{n}'.format(n=_bin['name'].replace('_',' ').replace('To', '-').replace('probe ', '').replace('m','-').replace('pt','XX').replace('p','.').replace('XX','p_{T}')))
-        txt.SetTextSize(0.08)
-        for ip, p in enumerate(effis['canv_mcAlt'].GetListOfPrimitives()):
-            if not ip: continue
-            canv_all.cd(ipad)
-            p.SetPad(0.05, 0.00, 0.95, 0.90)
-            p.Draw()
-            ipad+=1
-        canv_all.cd(ipad)
-        txt.SetTextFont(62)
-        txt.DrawLatex(0.00, 0.85, 'MC counting efficiency:')
-        txt.SetTextFont(42)
-        tmp = effis['mcNominal']
-        txt.DrawLatex(0.10, 0.75, 'passing: {n:.1f} #pm {ne:.1f}'.format(n=tmp[2],ne=tmp[4]))
-        txt.DrawLatex(0.10, 0.64, 'failing: {n:.1f} #pm {ne:.1f}'.format(n=tmp[3],ne=tmp[5]))
-        txt.SetTextFont(62)
-        txt.DrawLatex(0.10, 0.53, 'efficiency: {e:.2f} #pm {ee:.2f} %'.format(e=tmp[0]*100., ee=tmp[1]*100.))
-        txt.SetTextFont(42)
-        tmp = effis['mcAlt']
-        txt.SetTextFont(62)
-        txt.DrawLatex(0.00, 0.35, 'MC fitted signal:')
-        txt.SetTextFont(42)
-        txt.DrawLatex(0.10, 0.24, 'passing: {n:.1f} #pm {ne:.1f}'.format(n=tmp[2],ne=tmp[4]))
-        txt.DrawLatex(0.10, 0.13, 'failing: {n:.1f} #pm {ne:.1f}'.format(n=tmp[3],ne=tmp[5]))
-        txt.SetTextFont(62)
-        txt.DrawLatex(0.10, 0.02, 'efficiency: {e:.2f} #pm {ee:.2f} %'.format(e=tmp[0]*100., ee=tmp[1]*100.))
-        txt.SetTextFont(42)
-        ipad+=1
-        for ip, p in enumerate(effis['canv_dataNominal'].GetListOfPrimitives()):
-            if not ip: continue
-            canv_all.cd(ipad)
-            p.SetPad(0.05, 0.00, 0.95, 0.90)
-            p.Draw()
-            ipad+=1
-        canv_all.cd(ipad)
-        tmp = effis['dataNominal']
-        txt.SetTextFont(62)
-        txt.DrawLatex(0.00, 0.65, 'data nominal:')
-        txt.SetTextFont(42)
-        txt.DrawLatex(0.10, 0.54, 'passing: {n:.1f} #pm {ne:.1f}'.format(n=tmp[2],ne=tmp[4]))
-        txt.DrawLatex(0.10, 0.43, 'failing: {n:.1f} #pm {ne:.1f}'.format(n=tmp[3],ne=tmp[5]))
-        txt.SetTextFont(62)
-        txt.DrawLatex(0.10, 0.32, 'efficiency: {e:.2f} #pm {ee:.2f} %'.format(e=tmp[0]*100., ee=tmp[1]*100.))
-        txt.SetTextFont(42)
-        ipad+=1
-        for ip, p in enumerate(effis['canv_dataAltSig'].GetListOfPrimitives()):
-            if not ip: continue
-            canv_all.cd(ipad)
-            p.SetPad(0.05, 0.00, 0.95, 0.90)
-            p.Draw()
-            ipad+=1
-        canv_all.cd(ipad)
-        tmp = effis['dataAltSig']
-        txt.SetTextFont(62)
-        txt.DrawLatex(0.00, 0.65, 'data alternative:')
-        txt.SetTextFont(42)
-        txt.DrawLatex(0.10, 0.54, 'passing: {n:.1f} #pm {ne:.1f}'.format(n=tmp[2],ne=tmp[4]))
-        txt.DrawLatex(0.10, 0.43, 'failing: {n:.1f} #pm {ne:.1f}'.format(n=tmp[3],ne=tmp[5]))
-        txt.SetTextFont(62)
-        txt.DrawLatex(0.10, 0.32, 'efficiency: {e:.2f} #pm {ee:.2f} %'.format(e=tmp[0]*100., ee=tmp[1]*100.))
-        txt.SetTextFont(42)
-
-        #effis['canv_dataAltSig'].Draw()
-
-        odllevel = ROOT.gErrorIgnoreLevel
-        ROOT.gErrorIgnoreLevel = ROOT.kWarning
-        canv_all.SaveAs(outputDirectory+'/plots/{n}_all.pdf'.format(n=_bin['name']))
-        canv_all.SaveAs(outputDirectory+'/plots/{n}_all.png'.format(n=_bin['name']))
-        ROOT.gErrorIgnoreLevel = odllevel
-    
+        effis = {}
+        
+    #odllevel = ROOT.gErrorIgnoreLevel
+    #ROOT.gErrorIgnoreLevel = ROOT.kWarning
     pool = Pool()
     pool.map(parallel_sumUp, tnpBins['bins'])
-    #parallel_sumUp(tnpBins['bins'])
+    #for thebin in tnpBins['bins']: 
+    #    parallel_sumUp(thebin)
+    #ROOT.gErrorIgnoreLevel = odllevel
 
     lsfiles = []
     alltmpfiles = os.listdir(outputDirectory)
@@ -667,12 +638,34 @@ if args.sumUp:
     os.system('cat '+' '.join(lsfiles)+' > '+effFileName)
     os.system('rm  '+' '.join(lsfiles))
 
-    os.system('cp etc/inputs/index.php {d}/index.php'.format(d=outputDirectory+'/plots/'))
-
-
-    #fOut.close()
-
     print('Efficiencies saved in file : ',  effFileName)
+
+    outputDirectoryPlots = f"{outputDirectory}/plots/"
+    createPlotDirAndCopyPhp(outputDirectoryPlots)
+    #fOut.close()
+    outputDirectoryTH2 = f"{outputDirectoryPlots}/histo2D/"
+    createPlotDirAndCopyPhp(outputDirectoryTH2)
+
     import libPython.EGammaID_scaleFactors as makesf
-    makesf.doSFs(effFileName,luminosity,['pt', 'eta'], outputDirectory+'/plots/')
-    ## put here the new file for marco
+    makesf.doSFs(effFileName,luminosity,['pt', 'eta'], outputDirectoryTH2)
+
+    # plotting sanity-check plots on fitresults
+    print()
+    print("Plotting sanity-check histograms from fit results in this file")
+    print(f">>> {fileName}")
+    basePath = os.path.dirname(fileName)
+    outdirCheckPlots = basePath + "/plots/checkFitStatus/"
+    createPlotDirAndCopyPhp(outdirCheckPlots)
+    # get histogram to read binning, it is passed to checkFit
+    #rootfileWithEffi = safeOpenFile(basePath + "/allEfficiencies_2D.root")
+    #th2ForBinning = safeGetObject(rootfileWithEffi, "SF2D_nominal", detach=True)
+    #rootfileWithEffi.Close()
+    th2ForBinning = ROOT.TH2D("th2ForBinning", "", len(binning_eta)-1, array("d", binning_eta), len(binning_pt)-1, array("d", binning_pt))
+    print(f"Eta binning: {binning_eta}")
+    print(f"Pt binning : {binning_pt}")
+    tag = "MC" if "_DY_" in fileName else "Data"
+    fitName = f"Eff{tag}_" + fitType
+    checkFit(fileName, outdirCheckPlots, fitName, th2ForBinning)
+    print("================================================")
+    print("THE END!")
+    print("================================================")

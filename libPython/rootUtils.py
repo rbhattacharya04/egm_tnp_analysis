@@ -1,16 +1,11 @@
+#!/usr/bin/env python3 
+
 import ROOT, math, array, ctypes, copy
-#from ROOT import RooFit,RooFitResult
 import numpy as np
 import os.path
 from . import fitUtils
-# import *
+from .plotUtils import safeOpenFile, safeGetObject
 import functools
-#from fitSimultaneousUtils import *
-
-#ROOT.ROOT.EnableImplicitMT()
-#ROOT.ROOT.TTreeProcessorMT.SetMaxTasksPerFilePerWorker(1)
-
-#ROOT.gROOT.LoadMacro('pileupWeights.C+')
 
 def removeNegativeBins(h):
     for i in range(1,h.GetNbinsX()+1):
@@ -33,17 +28,17 @@ def makePassFailHistograms(sample, bins, bindef, var ):
     #print("sample.getInputPath() = ",sample.getInputPath()) 
     p = sample.getInputPath() 
     #print("p = ",p)
-    infile = ROOT.TFile(p)
+    infile = safeOpenFile(p, mode="read")
     #print(infile.ls())
-    h_tmp_pass = infile.Get("pass_" + sample.getName())
-    h_tmp_fail = infile.Get("fail_" + sample.getName())
+    h_tmp_pass = safeGetObject(infile, f"pass_{sample.getName()}", detach=False)
+    h_tmp_fail = safeGetObject(infile, f"fail_{sample.getName()}", detach=False)
     altPass = "pass_" + sample.getName() + "_alt"
     keyNames = [k.GetName() for k in infile.GetListOfKeys()]
     h_tmp_pass_alt = None # will be needed for tracking when using all probes to form failing probe MC template to fit data, in this case the alternate version of passing probe made with  standalone variables is needed 
     if altPass in keyNames:
-        h_tmp_pass_alt = infile.Get(altPass)        
+        h_tmp_pass_alt = safeGetObject(infile, altPass, detach=False)
         
-    outfile = ROOT.TFile(sample.getOutputPath(), 'recreate')
+    outfile = safeOpenFile(sample.getOutputPath(), mode="recreate")
     
     #print('this is the integral of the passing', h_tmp_pass.Integral())
     #print('this is the integral of the failing', h_tmp_fail.Integral())
@@ -52,17 +47,19 @@ def makePassFailHistograms(sample, bins, bindef, var ):
         h_name = ib['name' ]
         h_title= ib['title']
 
-        tmp_valpt  = ib['vars'][probe_var_pt ]['min']
-        tmp_valeta = ib['vars'][probe_var_eta]['min']
+        tmp_valpt_min  = ib['vars'][probe_var_pt ]['min']
+        tmp_valeta_min = ib['vars'][probe_var_eta]['min']
+        tmp_valpt_max  = ib['vars'][probe_var_pt ]['max']
+        tmp_valeta_max = ib['vars'][probe_var_eta]['max']
 
         epsilon = 0.001 # safety thing when picking the bin edges using FindFixBin
-        ibin_pt  = h_tmp_pass.GetYaxis().FindFixBin(tmp_valpt + epsilon)
-        ibin_eta = h_tmp_pass.GetZaxis().FindFixBin(tmp_valeta+ epsilon)
-        #print('i am at ibin_pt  {ipt}  and pt  {pt:.1f} '.format(ipt = ibin_pt , pt = tmp_valpt ))
-        #print('i am at ibin_eta {ieta} and eta {eta:.1f}'.format(ieta= ibin_eta, eta= tmp_valeta))
+        ibin_pt_low  = h_tmp_pass.GetYaxis().FindFixBin(tmp_valpt_min  + epsilon)
+        ibin_eta_low = h_tmp_pass.GetZaxis().FindFixBin(tmp_valeta_min + epsilon)
+        ibin_pt_high  = h_tmp_pass.GetYaxis().FindFixBin(tmp_valpt_max  - epsilon)
+        ibin_eta_high = h_tmp_pass.GetZaxis().FindFixBin(tmp_valeta_max - epsilon)
 
-        h_pass = h_tmp_pass.ProjectionX(h_name+'_Pass', ibin_pt, ibin_pt, ibin_eta, ibin_eta)
-        h_fail = h_tmp_fail.ProjectionX(h_name+'_Fail', ibin_pt, ibin_pt, ibin_eta, ibin_eta)
+        h_pass = h_tmp_pass.ProjectionX(h_name+'_Pass', ibin_pt_low, ibin_pt_high, ibin_eta_low, ibin_eta_high)
+        h_fail = h_tmp_fail.ProjectionX(h_name+'_Fail', ibin_pt_low, ibin_pt_high, ibin_eta_low, ibin_eta_high)
         h_pass.SetTitle(h_title+' passing')
         h_fail.SetTitle(h_title+' failing')
         removeNegativeBins(h_pass)
@@ -70,7 +67,7 @@ def makePassFailHistograms(sample, bins, bindef, var ):
         h_pass.Write(h_pass.GetName())
         h_fail.Write(h_fail.GetName())
         if h_tmp_pass_alt:
-            h_pass_alt = h_tmp_pass_alt.ProjectionX(h_name+'_Pass_alt', ibin_pt, ibin_pt, ibin_eta, ibin_eta)
+            h_pass_alt = h_tmp_pass_alt.ProjectionX(h_name+'_Pass_alt', ibin_pt_low, ibin_pt_high, ibin_eta_low, ibin_eta_high)
             h_pass_alt.SetTitle(h_title+' passing alternate')
             removeNegativeBins(h_pass_alt)
             h_pass_alt.Write(h_pass_alt.GetName())
@@ -78,16 +75,15 @@ def makePassFailHistograms(sample, bins, bindef, var ):
     outfile.Close()
 
 
-def histPlotter( rootfile, tnpBin, plotDir, replica=-1, verbosePlotting=True ):
+def histPlotter(rootfile, tnpBin, plotDir, replica=-1, verbosePlotting=True ):
 
     if verbosePlotting:
+        binName = tnpBin['name']
         if replica<0:
-            #print('  get canvas: ' , '{c}_Canv'.format(c=tnpBin['name']))
-            c = rootfile.Get( '%s_Canv' % tnpBin['name'] )
-            c.Print( '%s/%s.png' % (plotDir,tnpBin['name']))
-            c.Print( '%s/%s.pdf' % (plotDir,tnpBin['name']))
+            c = safeGetObject(rootfile, f"{binName}_Canv", detach=False)
+            c.SaveAs(f"{plotDir}/{binName}.png")   
+            # c.Print( '%s/%s.pdf' % (plotDir,tnpBin['name']))  ## this doesn't work properly, it only saves the pad with the text
         else:
-            #print('  get canvas: ' , '{c}_Canv_Stat{r}'.format(c=tnpBin['name'],r=replica))
             c = rootfile.Get( '%s_Canv_Stat%d' % (tnpBin['name'],replica) )
             c.Print( '%s/%s_Stat%d.png' % (plotDir,tnpBin['name'],replica))
             c.Print( '%s/%s_Stat%d.pdf' % (plotDir,tnpBin['name'],replica))
@@ -110,171 +106,171 @@ def computeEffi( n1,n2,e1,e2):
     return effout
 
 
-def getAllEffi( info, bindef ):
+def getAllEffi(info, bindef, outputDirectory, saveCanvas=False):
+    # FIXME: this function often leads to crashes,
+    #        probably because of reading canvases but it is not clear
     effis = {}
-    if not info['mcNominal'] is None and os.path.isfile(info['mcNominal']):
-        rootfile = ROOT.TFile( info['mcNominal'], 'read' )
-        hP = rootfile.Get('%s_Pass'%bindef['name'])
-        hF = rootfile.Get('%s_Fail'%bindef['name'])
-        bin1 = 1
-        bin2 = hP.GetXaxis().GetNbins()
-        eP = ctypes.c_double(-1.0)
-        eF = ctypes.c_double(-1.0)
-        nP = hP.IntegralAndError(bin1,bin2,eP)
-        nF = hF.IntegralAndError(bin1,bin2,eF)
+    effis_canvas = {}
+    binName = bindef["name"]
+    canvasesToGet = ["dataNominal", "dataAltSig", "mcAltSig"]
+    for key in info.keys():
+        value = info[key]
+        if value is None or not os.path.isfile(value):
+            effis[key] = [-1,-1]
+            effis_canvas[f"canv_{key}"] = None
+        else:
+            rootfile = safeOpenFile(value, mode="read")
+            # some customization
+            if key == "mcNominal":
+                # just counting using integral
+                hP = safeGetObject(rootfile, f"{binName}_Pass", detach=False)
+                hF = safeGetObject(rootfile, f"{binName}_Fail", detach=False)
+                bin1 = 1
+                bin2 = hP.GetXaxis().GetNbins()
+                ePc = ctypes.c_double(-1.0)
+                eFc = ctypes.c_double(-1.0)
+                nP = hP.IntegralAndError(bin1,bin2,ePc)
+                nF = hF.IntegralAndError(bin1,bin2,eFc)
+                eP = float(ePc.value)
+                eF = float(eFc.value)
+            else:
+                fitresP = safeGetObject(rootfile, f"{binName}_resP", detach=False)
+                fitresF = safeGetObject(rootfile, f"{binName}_resF", detach=False)
+                if key in canvasesToGet and saveCanvas:
+                    effis_canvas[f"canv_{key}"] = safeGetObject(rootfile, f"{binName}_Canv", detach=False)
+                    #effis_canvas[f"canv_{key}"] = copy.deepcopy(canv.Clone(f"{key}_{binName}"))
+                #rpPass = safeGetObject(rootfile, f"{binName}_rooplotP", detach=False)
+                #rpFail = safeGetObject(rootfile, f"{binName}_rooplotF", detach=False)
+                #effis[f"rpPass_{key}"] = copy.deepcopy(rpPass.Clone(f"rpP_{key}_{binName}"))
+                #effis[f"rpFail_{key}"] = copy.deepcopy(rpFail.Clone(f"rpF_{key}_{binName}"))
+                fitP = fitresP.floatParsFinal().find("nSigP")
+                fitF = fitresF.floatParsFinal().find("nSigF")
+                nP = fitP.getVal()
+                nF = fitF.getVal()
+                eP = fitP.getError()
+                eF = fitF.getError()
+                if key in ["dataNominal", "dataAltSig", "dataAltBkg"]:
+                    # if the fit is reliable the uncertainty in nSignal for data must be at least equal to sqrt(nSignal)
+                    # it can be larger because of the presence of parameters and backgrounds
+                    eP = max(math.sqrt(nP), eP)
+                    eF = max(math.sqrt(nF), eF)
+            # done with all cases
+            effis[key] = computeEffi(nP,nF,eP,eF) +[nP, nF, eP, eF]
+            rootfile.Close() # try also not closing the file
+    ##
+    ##
+    ## Saving canvases here, let's test if this also leads to crashes
+    ##
+    # canvases = [f"canv_{x}" for x in canvasesToGet]
+    # padsFromCanvas = {}
+    # for c in canvases:
+    #     if c not in effis_canvas.keys() or effis_canvas[c] == None:                
+    #         print(f"Canvas {c} not found or not available")
+    #         return 0
+    #     else:
+    #         #padsFromCanvas[c] = list(effis[c])
+    #         ## the following was for when canvases where returned
+    #         if effis_canvas[c].ClassName() ==  "TCanvas":
+    #             padsFromCanvas[c] = [p for p in effis_canvas[c].GetListOfPrimitives()]
+    #             # print(padsFromCanvas[c])
+    #             for p in padsFromCanvas[c]:
+    #                 ROOT.SetOwnership(p, False)
+    #             #effis_canvas[c] = None
+    #             #ROOT.SetOwnership(effis_canvas[c], False)
+    #         else:
+    #             print(f"SOMETHING SCREWED UP WITH TCANVAS for bin {bindef['name']}")
+    #             return 0
 
-        effis['mcNominal'] = computeEffi(nP,nF,float(eP.value),float(eF.value)) +[nP, nF, float(eP.value), float(eF.value)]
-        rootfile.Close()
-    else: effis['mcNominal'] = [-1,-1]
+    if not saveCanvas:
+        return effis
 
-    if not info['mcNominal_fit'] is None and os.path.isfile(info['mcNominal_fit']):
-        rootfile = ROOT.TFile( info['mcNominal_fit'], 'read' )
-        fitresP = rootfile.Get( '%s_resP' % bindef['name']  )
-        fitresF = rootfile.Get( '%s_resF' % bindef['name'] )
-        effis['canv_mcNominal_fit'] = copy.deepcopy(rootfile.Get( '%s_Canv' % bindef['name'] ))
-
-        fitP = fitresP.floatParsFinal().find('nSigP')
-        fitF = fitresF.floatParsFinal().find('nSigF')
-        
-        nP = fitP.getVal()
-        nF = fitF.getVal()
-        eP = fitP.getError()
-        eF = fitF.getError()
-
-        effis['mcNominal_fit'] = computeEffi(nP,nF,eP,eF) +[nP, nF, float(eP), float(eF)]
-        rootfile.Close()
-    else: 
-        effis['mcNominal_fit'] = [-1,-1]
-        effis['canv_mcNominal_fit'] = None
-    
-
-    if not info['tagSel'] is None and os.path.isfile(info['tagSel']):
-        rootfile = ROOT.TFile( info['tagSel'], 'read' )
-        hP = rootfile.Get('%s_Pass'%bindef['name'])
-        hF = rootfile.Get('%s_Fail'%bindef['name'])
-        bin1 = 1
-        bin2 = hP.GetXaxis().GetNbins()
-        eP = ROOT.Double(-1.0)
-        eF = ROOT.Double(-1.0)
-        nP = hP.IntegralAndError(bin1,bin2,eP)
-        nF = hF.IntegralAndError(bin1,bin2,eF)
-
-        effis['tagSel'] = computeEffi(nP,nF,eP,eF)
-        rootfile.Close()
-    else: effis['tagSel'] = [-1,-1]
-        
-    if not info['mcAlt'] is None and os.path.isfile(info['mcAlt']):
-        rootfile = ROOT.TFile( info['mcAlt'], 'read' )
-        fitresP = rootfile.Get( '%s_resP' % bindef['name']  )
-        fitresF = rootfile.Get( '%s_resF' % bindef['name'] )
-        effis['canv_mcAlt'] = copy.deepcopy(rootfile.Get( '%s_Canv' % bindef['name'] ))
-
-        fitP = fitresP.floatParsFinal().find('nSigP')
-        fitF = fitresF.floatParsFinal().find('nSigF')
-        
-        nP = fitP.getVal()
-        nF = fitF.getVal()
-        eP = fitP.getError()
-        eF = fitF.getError()
-
-        effis['mcAlt'] = computeEffi(nP,nF,eP,eF) +[nP, nF, float(eP), float(eF)]
-        rootfile.Close()
-    else: 
-        effis['mcAlt'] = [-1,-1]
-        effis['canv_mcAlt'] = None
-
-    
-    if not info['mcAltBkg'] is None and os.path.isfile(info['mcAltBkg']):
-        rootfile = ROOT.TFile( info['mcAltBkg'], 'read' )
-        fitresP = rootfile.Get( '%s_resP' % bindef['name']  )
-        fitresF = rootfile.Get( '%s_resF' % bindef['name'] )
-        effis['canv_mcAltBkg'] = copy.deepcopy(rootfile.Get( '%s_Canv' % bindef['name'] ))
-
-        fitP = fitresP.floatParsFinal().find('nSigP')
-        fitF = fitresF.floatParsFinal().find('nSigF')
-        
-        nP = fitP.getVal()
-        nF = fitF.getVal()
-        eP = fitP.getError()
-        eF = fitF.getError()
-
-        effis['mcAltBkg'] = computeEffi(nP,nF,eP,eF) +[nP, nF, float(eP), float(eF)]
-        rootfile.Close()
-    else: 
-        effis['mcAltBkg'] = [-1,-1]
-        effis['canv_mcAltBkg'] = None
-
-    if not info['dataNominal'] is None and os.path.isfile(info['dataNominal']) :
-        rootfile = ROOT.TFile( info['dataNominal'], 'read' )
-        fitresP = rootfile.Get( '%s_resP' % bindef['name']  )
-        fitresF = rootfile.Get( '%s_resF' % bindef['name'] )
-        effis['canv_dataNominal'] = copy.deepcopy(rootfile.Get( '%s_Canv' % bindef['name']  ))
-
-        fitP = fitresP.floatParsFinal().find('nSigP')
-        fitF = fitresF.floatParsFinal().find('nSigF')
-        
-        nP = fitP.getVal()
-        nF = fitF.getVal()
-        eP = fitP.getError()
-        eF = fitF.getError()
-        rootfile.Close()
-
-        # if the fit is reliable the uncertainty in nSignal for data must be at least equal to sqrt(nSignal)
-        # it can be larger because of the presence of parameters and backgrounds
-        eP = max(math.sqrt(nP), eP)
-        eF = max(math.sqrt(nF), eF)
-
-        effis['dataNominal'] = computeEffi(nP,nF,eP,eF) +[nP, nF, eP, eF]
-    else:
-        effis['dataNominal'] = [-1,-1]
-        effis['canv_dataNominal'] = None
-
-    if not info['dataAltSig'] is None and os.path.isfile(info['dataAltSig']) :
-        rootfile = ROOT.TFile( info['dataAltSig'], 'read' )
-        fitresP = rootfile.Get( '%s_resP' % bindef['name']  )
-        fitresF = rootfile.Get( '%s_resF' % bindef['name'] )
-        effis['canv_dataAltSig'] = copy.deepcopy(rootfile.Get( '%s_Canv' % bindef['name'] ))
-
-        nP = fitresP.floatParsFinal().find('nSigP').getVal()
-        nF = fitresF.floatParsFinal().find('nSigF').getVal()
-        eP = fitresP.floatParsFinal().find('nSigP').getError()
-        eF = fitresF.floatParsFinal().find('nSigF').getError()
-        rootfile.Close()
-
-        # if the fit is reliable the uncertainty in nSignal for data must be at least equal to sqrt(nSignal)
-        # it can be larger because of the presence of parameters and backgrounds
-        eP = max(math.sqrt(nP), eP)
-        eF = max(math.sqrt(nF), eF)
-
-        
-        effis['dataAltSig'] = computeEffi(nP,nF,eP,eF) +[nP, nF, eP, eF]
-
-    else:
-        effis['dataAltSig'] = [-1,-1]
-        effis['canv_dataAltSig'] = None
-
-    if not info['dataAltBkg'] is None and os.path.isfile(info['dataAltBkg']):
-        rootfile = ROOT.TFile( info['dataAltBkg'], 'read' )
-        fitresP = rootfile.Get( '%s_resP' % bindef['name']  )
-        fitresF = rootfile.Get( '%s_resF' % bindef['name'] )
-        effis['canv_dataAltBkg'] = copy.deepcopy(rootfile.Get( '%s_Canv' % bindef['name'] ))
-
-        nP = fitresP.floatParsFinal().find('nSigP').getVal()
-        nF = fitresF.floatParsFinal().find('nSigF').getVal()
-        eP = fitresP.floatParsFinal().find('nSigP').getError()
-        eF = fitresF.floatParsFinal().find('nSigF').getError()
-        rootfile.Close()
-
-        # if the fit is reliable the uncertainty in nSignal for data must be at least equal to sqrt(nSignal)
-        # it can be larger because of the presence of parameters and backgrounds
-        eP = max(math.sqrt(nP), eP)
-        eF = max(math.sqrt(nF), eF)
-
-        effis['dataAltBkg'] = computeEffi(nP,nF,eP,eF)
-    else:
-        effis['dataAltBkg'] = [-1,-1]
-        effis['canv_dataAltBkg'] = None
-
+    canv_all = ROOT.TCanvas(bindef['name'], bindef['name'], 1200, 1200)
+    canv_all.Divide(3,3)
+    canv_all.Draw()
+    canv_all.cd(0)
+    txt = ROOT.TLatex()
+    txt.SetTextFont(42)
+    txt.SetTextSize(0.03)
+    txt.SetNDC()
+    txt.DrawLatex(0.01, 0.97, '{n}'.format(n=bindef['name'].replace('_',' ').replace('To', '-').replace('probe ', '').replace('m','-').replace('pt','XX').replace('p','.').replace('XX','p_{T}')))
+    txt.SetTextSize(0.08)
+    ipad = 1
+    # for ip, p in enumerate(padsFromCanvas["canv_mcAltSig"]):
+    for ip, p in enumerate(effis_canvas["canv_mcAltSig"].GetListOfPrimitives()):
+        if not ip: continue
+        canv_all.cd(ipad)
+        newp = p.Clone(f"tmp_mcAltSig_{ip}")
+        newp.SetPad(0.05, 0.00, 0.95, 0.90)
+        newp.Draw()
+        ipad += 1
+    canv_all.cd(ipad)
+    txt.SetTextFont(62)
+    txt.DrawLatex(0.00, 0.85, 'MC counting efficiency:')
+    txt.SetTextFont(42)
+    tmp = effis['mcNominal']
+    txt.DrawLatex(0.10, 0.75, 'passing: {n:.1f} #pm {ne:.1f}'.format(n=tmp[2],ne=tmp[4]))
+    txt.DrawLatex(0.10, 0.64, 'failing: {n:.1f} #pm {ne:.1f}'.format(n=tmp[3],ne=tmp[5]))
+    txt.SetTextFont(62)
+    txt.DrawLatex(0.10, 0.53, 'efficiency: {e:.2f} #pm {ee:.2f} %'.format(e=tmp[0]*100., ee=tmp[1]*100.))
+    txt.SetTextFont(42)
+    tmp = effis['mcAltSig']
+    txt.SetTextFont(62)
+    txt.DrawLatex(0.00, 0.35, 'MC fitted signal:')
+    txt.SetTextFont(42)
+    txt.DrawLatex(0.10, 0.24, 'passing: {n:.1f} #pm {ne:.1f}'.format(n=tmp[2],ne=tmp[4]))
+    txt.DrawLatex(0.10, 0.13, 'failing: {n:.1f} #pm {ne:.1f}'.format(n=tmp[3],ne=tmp[5]))
+    txt.SetTextFont(62)
+    txt.DrawLatex(0.10, 0.02, 'efficiency: {e:.2f} #pm {ee:.2f} %'.format(e=tmp[0]*100., ee=tmp[1]*100.))
+    txt.SetTextFont(42)
+    ipad+=1
+    #for ip, p in enumerate(padsFromCanvas["canv_dataNominal"]):
+    for ip, p in enumerate(effis_canvas["canv_dataNominal"].GetListOfPrimitives()):
+        if not ip: continue
+        canv_all.cd(ipad)
+        newp = p.Clone(f"tmp_dataNominal_{ip}")
+        newp.SetPad(0.05, 0.00, 0.95, 0.90)
+        newp.Draw()
+        ipad += 1
+    canv_all.cd(ipad)
+    tmp = effis['dataNominal']
+    txt.SetTextFont(62)
+    txt.DrawLatex(0.00, 0.65, 'data nominal:')
+    txt.SetTextFont(42)
+    txt.DrawLatex(0.10, 0.54, 'passing: {n:.1f} #pm {ne:.1f}'.format(n=tmp[2],ne=tmp[4]))
+    txt.DrawLatex(0.10, 0.43, 'failing: {n:.1f} #pm {ne:.1f}'.format(n=tmp[3],ne=tmp[5]))
+    txt.SetTextFont(62)
+    txt.DrawLatex(0.10, 0.32, 'efficiency: {e:.2f} #pm {ee:.2f} %'.format(e=tmp[0]*100., ee=tmp[1]*100.))
+    txt.SetTextFont(42)
+    ipad += 1
+    #for ip, p in enumerate(padsFromCanvas["canv_dataAltSig"]):
+    for ip, p in enumerate(effis_canvas["canv_dataAltSig"].GetListOfPrimitives()):
+        if not ip: continue
+        canv_all.cd(ipad)
+        newp = p.Clone(f"tmp_dataAltSig_{ip}")
+        newp.SetPad(0.05, 0.00, 0.95, 0.90)
+        newp.Draw()
+        ipad+=1
+    canv_all.cd(ipad)
+    tmp = effis['dataAltSig']
+    txt.SetTextFont(62)
+    txt.DrawLatex(0.00, 0.65, 'data alternative:')
+    txt.SetTextFont(42)
+    txt.DrawLatex(0.10, 0.54, 'passing: {n:.1f} #pm {ne:.1f}'.format(n=tmp[2],ne=tmp[4]))
+    txt.DrawLatex(0.10, 0.43, 'failing: {n:.1f} #pm {ne:.1f}'.format(n=tmp[3],ne=tmp[5]))
+    txt.SetTextFont(62)
+    txt.DrawLatex(0.10, 0.32, 'efficiency: {e:.2f} #pm {ee:.2f} %'.format(e=tmp[0]*100., ee=tmp[1]*100.))
+    txt.SetTextFont(42)
+    canv_all.SaveAs(outputDirectory+'/plots/{n}_all.pdf'.format(n=bindef['name']))
+    canv_all.SaveAs(outputDirectory+'/plots/{n}_all.png'.format(n=bindef['name']))
+    # not sure if the following helps removing crashes
+    #canv_all = None
+    #canv_all.Clear()
+    #for c in effis_canvas:
+    #    c.Clear()
+    #effis_canvas = {}
+    ###
+    ###
+    # only return numbers and not canvases
     return effis
 
 
